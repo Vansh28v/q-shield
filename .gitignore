@@ -39,3 +39,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Q-SHIELD local backups and runtime data
+.qshield-backup/
+q-shield-terminal-log.txt
+*.db
+*.db-shm
+*.db-wal
+
+# Q-SHIELD local database
+.qshield/
