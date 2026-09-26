@@ -411,39 +411,48 @@ export default function AnalyticsPage() {
             "/api/security/attack",
             {
               experiment: {
-                experimentId:
-                  `${cycleId}-${definition.type}`,
+  experimentId:
+    `${cycleId}-${definition.type}`,
 
-                sessionId:
-                  `${cycleId}-ATTACK-SESSION-${i}`,
+  sessionId:
+    `${cycleId}-ATTACK-SESSION-${i}`,
 
-                signatureId:
-                  `${cycleId}-ATTACK-SIG-${i}`,
+  signatureId:
+    `${cycleId}-ATTACK-SIG-${i}`,
 
-                signerId:
-                  "Q-SHIELD-DEMO-SIGNER",
+  // For impersonation, simulate an attacker claiming a
+  // different identity. Other attacks keep the legitimate signer.
+  signerId:
+    definition.type === "IMPERSONATION"
+      ? "Q-SHIELD-DEMO-IMPOSTOR"
+      : "Q-SHIELD-DEMO-SIGNER",
 
-                message:
-                  "Q-SHIELD SECURITY ANALYTICS ATTACK",
+  // Trusted identity used by the impersonation detector.
+  expectedSignerId:
+    "Q-SHIELD-DEMO-SIGNER",
 
-                nonce:
-                  `${cycleId}-ATTACK-NONCE-${i}`,
+  message:
+    "Q-SHIELD SECURITY ANALYTICS ATTACK",
 
-                alpha,
-                beta,
+  nonce:
+    `${cycleId}-ATTACK-NONCE-${i}`,
 
-                shots: 1000,
+  alpha,
 
-                threshold: 0.05,
+  beta,
 
-                seed:
-                  seed + i + 1,
+  shots: 1000,
 
-                noise: {
-                  model: "NONE",
-                  probability: 0,
-                },
-              },
+  threshold: 0.05,
+
+  seed:
+    seed + i + 1,
+
+  noise: {
+    model: "NONE",
+    probability: 0,
+  },
+},
 
               attack: {
                 type:

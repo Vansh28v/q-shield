@@ -541,39 +541,37 @@ export default function DemoPage() {
       generatedSeed.toString(36);
 
     const config: ExperimentConfig = {
-      experimentId:
-        `DEMO-${Date.now()}`,
+  experimentId:
+    `DEMO-${Date.now()}`,
 
-      sessionId:
-        `SESSION-DEMO-${suffix}`,
+  sessionId:
+    `SESSION-DEMO-${suffix}`,
 
-      signatureId:
-        `SIG-DEMO-${suffix}`,
+  signatureId:
+    `SIG-DEMO-${suffix}`,
 
-      signerId:
-        "Q-SHIELD-DEMO-SIGNER",
+  signerId:
+    "Q-SHIELD-DEMO-SIGNER",
 
-      message:
-        "Q-SHIELD live demonstration",
+  expectedSignerId:
+    "Q-SHIELD-DEMO-SIGNER",
 
-      nonce:
-        `NONCE-${suffix}`,
+  message:
+    "Q-SHIELD live demonstration",
 
-      alpha: 1,
+  nonce:
+    `NONCE-${suffix}`,
 
-      beta: 0,
+  alpha: 1,
 
-      shots: 1000,
+  beta: 0,
 
-      /*
-       * Statistical verification threshold.
-       *
-       * 0.1 = 10%
-       */
-      threshold: 0.1,
+  shots: 1000,
 
-      seed: generatedSeed,
-    };
+  threshold: 0.1,
+
+  seed: generatedSeed,
+};
 
     /*
      * Preserve the original configuration.
