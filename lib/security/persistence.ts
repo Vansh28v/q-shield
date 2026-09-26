@@ -75,3 +75,218 @@ export function getRecentEvents(limit = 50): SecurityEvent[] {
     return [];
   }
 }
+
+/* ============================== */
+/* AUTHENTICATION                 */
+/* ============================== */
+//
+// Reuses the existing SQLite database (getDatabase()) rather than
+// introducing a second persistence system. Tables are created lazily,
+// idempotently, the first time any auth function runs.
+
+export type StoredUser = {
+  id: string;
+  name: string;
+  email: string;
+  passwordHash: string;
+  createdAt: string;
+};
+
+export type PublicUser = {
+  id: string;
+  name: string;
+  email: string;
+  createdAt: string;
+};
+
+export function toPublicUser(user: StoredUser): PublicUser {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    createdAt: user.createdAt,
+  };
+}
+
+type UserRow = {
+  id: string;
+  name: string;
+  email: string;
+  password_hash: string;
+  created_at: string;
+};
+
+let authTablesReady = false;
+
+function ensureAuthTables(): void {
+  if (authTablesReady) return;
+
+  const db = getDatabase();
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+
+  authTablesReady = true;
+}
+
+function rowToUser(row: UserRow): StoredUser {
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    passwordHash: row.password_hash,
+    createdAt: row.created_at,
+  };
+}
+
+export function createUser(input: {
+  id: string;
+  name: string;
+  email: string;
+  passwordHash: string;
+}): StoredUser {
+  ensureAuthTables();
+
+  const db = getDatabase();
+  const createdAt = new Date().toISOString();
+
+  const stmt = db.prepare(`
+    INSERT INTO users (id, name, email, password_hash, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+
+  // Lets a UNIQUE constraint violation (duplicate email) propagate to the
+  // caller as a thrown error, rather than being silently swallowed like
+  // the telemetry functions above — signup needs to know if this failed.
+  stmt.run(input.id, input.name, input.email, input.passwordHash, createdAt);
+
+  return {
+    id: input.id,
+    name: input.name,
+    email: input.email,
+    passwordHash: input.passwordHash,
+    createdAt,
+  };
+}
+
+export function getUserByEmail(email: string): StoredUser | null {
+  ensureAuthTables();
+
+  try {
+    const db = getDatabase();
+    const row = db
+      .prepare("SELECT * FROM users WHERE email = ?")
+      .get(email) as UserRow | undefined;
+
+    return row ? rowToUser(row) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getUserById(id: string): StoredUser | null {
+  ensureAuthTables();
+
+  try {
+    const db = getDatabase();
+    const row = db.prepare("SELECT * FROM users WHERE id = ?").get(id) as
+      | UserRow
+      | undefined;
+
+    return row ? rowToUser(row) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function createSession(input: {
+  token: string;
+  userId: string;
+  expiresAt: string;
+}): void {
+  ensureAuthTables();
+
+  const db = getDatabase();
+  const createdAt = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO sessions (token, user_id, created_at, expires_at)
+    VALUES (?, ?, ?, ?)
+  `).run(input.token, input.userId, createdAt, input.expiresAt);
+}
+
+export function getSessionUser(token: string): PublicUser | null {
+  ensureAuthTables();
+
+  try {
+    const db = getDatabase();
+    const row = db
+      .prepare("SELECT user_id, expires_at FROM sessions WHERE token = ?")
+      .get(token) as { user_id: string; expires_at: string } | undefined;
+
+    if (!row) return null;
+
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+      return null;
+    }
+
+    const user = getUserById(row.user_id);
+    return user ? toPublicUser(user) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function deleteSession(token: string): void {
+  ensureAuthTables();
+
+  try {
+    const db = getDatabase();
+    db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+  } catch {
+    // Gracefully handle persistence failure
+  }
+}
+
+export function createPasswordResetToken(input: {
+  token: string;
+  userId: string;
+  expiresAt: string;
+}): void {
+  ensureAuthTables();
+
+  try {
+    const db = getDatabase();
+    const createdAt = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO password_reset_tokens (token, user_id, created_at, expires_at, used)
+      VALUES (?, ?, ?, ?, 0)
+    `).run(input.token, input.userId, createdAt, input.expiresAt);
+  } catch {
+    // Gracefully handle persistence failure
+  }
+}

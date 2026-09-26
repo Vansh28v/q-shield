@@ -39,12 +39,36 @@ export type QDSExperimentConfig = {
   beta: number;
   shots: number;
   threshold: number;
+
   seed?: number;
+
   noise?: {
     model: NoiseModel;
     probability: number;
   };
+
+  // Protocol/session identity fields
+  experimentId?: string;
+  sessionId?: string;
+  signatureId?: string;
+  signerId?: string;
+  message?: string;
+  nonce?: string;
+
+  // Trusted identity used by the impersonation detector
+  expectedSignerId?: string;
 };
+
+  /*
+   * Security/replay metadata.
+   *
+   * These values are passed through the experiment configuration
+   * when needed by higher-level security/attack logic.
+   *
+   * Replay detection itself does NOT happen in this simulator.
+   * Replay detection belongs to the security layer / ReplayLedger.
+   */
+  
 
 export type QDSExperimentResult = {
   inputState: QuantumState;
@@ -97,6 +121,12 @@ function createInputState(
  * Statistical Analysis
  *     ↓
  * Threshold Verification
+ *     ↓
+ * CHSH Analysis
+ *
+ * NOTE:
+ * Replay detection is intentionally NOT performed here.
+ * It is handled by the security/ReplayLedger layer.
  */
 export function runQDSExperiment(
   config: QDSExperimentConfig,
@@ -132,10 +162,7 @@ export function runQDSExperiment(
   // 3. Run actual 3-qubit teleportation
   // --------------------------------------------------
 
-  const measurementBits: TeleportationBits = [
-    0,
-    0,
-  ];
+  const measurementBits: TeleportationBits = [0, 0];
 
   const teleportation = teleport(
     inputState,
@@ -143,7 +170,8 @@ export function runQDSExperiment(
   );
 
   // --------------------------------------------------
-  // 4. Create deterministic seeded RNG & Apply quantum-channel noise
+  // 4. Create deterministic seeded RNG
+  //    and apply quantum-channel noise
   // --------------------------------------------------
 
   const rng: RNG = createRNG(seed);
@@ -177,7 +205,7 @@ export function runQDSExperiment(
   );
 
   // --------------------------------------------------
-  // 8. Statistical comparison
+  // 7. Statistical comparison
   // --------------------------------------------------
 
   const statistics =
@@ -187,7 +215,7 @@ export function runQDSExperiment(
     );
 
   // --------------------------------------------------
-  // 9. Deterministic security verification
+  // 8. Deterministic security verification
   // --------------------------------------------------
 
   const verification =
@@ -198,14 +226,17 @@ export function runQDSExperiment(
     );
 
   // --------------------------------------------------
-  // 10. CHSH Bell inequality simulation
+  // 9. CHSH Bell inequality simulation
   // --------------------------------------------------
 
   const chsh = simulateCHSH({
     seed,
     noiseModel: noise.model,
     noiseProbability: noise.probability,
-    shotsPerSetting: Math.max(50, Math.floor(shots / 4)),
+    shotsPerSetting: Math.max(
+      50,
+      Math.floor(shots / 4),
+    ),
   });
 
   return {

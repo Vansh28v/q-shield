@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /* ============================== */
 /* QUANTUM FIELD                  */
@@ -462,10 +462,308 @@ function Arrow() {
 }
 
 /* ============================== */
+/* LIVE TELEMETRY (/api/events)   */
+/* ============================== */
+
+type RawEvent = Record<string, unknown>;
+
+type LandingMetrics = {
+  signaturesVerified: number;
+  threatsDetected: number;
+  attackTests: number;
+  attacksDetected: number;
+  verified: number;
+  rejected: number;
+  latencySamples: number;
+  latencySum: number;
+};
+
+type TelemetryState =
+  | { status: "loading" }
+  | { status: "error" }
+  | { status: "ready"; metrics: LandingMetrics };
+
+const ATTACK_TYPES = [
+  "FORGERY",
+  "IMPERSONATION",
+  "REPLAY",
+  "CHANNEL_MANIPULATION",
+];
+
+function isRecord(value: unknown): value is RawEvent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}
+
+// Returns null when the payload shape is not recognised, so the page
+// shows the safe error state instead of fake zeros.
+function extractEvents(payload: unknown): RawEvent[] | null {
+  if (Array.isArray(payload)) {
+    return payload.filter(isRecord);
+  }
+
+  if (isRecord(payload)) {
+    for (const key of ["events", "data", "items", "results"]) {
+      const candidate = payload[key];
+
+      if (Array.isArray(candidate)) {
+        return candidate.filter(isRecord);
+      }
+    }
+  }
+
+  return null;
+}
+
+function getMetadata(event: RawEvent): RawEvent {
+  const raw = event.metadata;
+
+  if (isRecord(raw)) {
+    return raw;
+  }
+
+  if (typeof raw === "string") {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+
+      if (isRecord(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // malformed metadata is ignored
+    }
+  }
+
+  return {};
+}
+
+function normalizeType(event: RawEvent): string {
+  const candidates = [
+    event.eventType,
+    event.type,
+    event.event_type,
+    event.normalizedType,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate
+        .trim()
+        .toUpperCase()
+        .replace(/[\s-]+/g, "_");
+    }
+  }
+
+  return "";
+}
+
+function readDetectedFlag(
+  event: RawEvent,
+  metadata: RawEvent,
+): boolean | null {
+  if (typeof event.detected === "boolean") {
+    return event.detected;
+  }
+
+  if (typeof metadata.detected === "boolean") {
+    return metadata.detected;
+  }
+
+  return null;
+}
+
+function hasThreatLabel(event: RawEvent, metadata: RawEvent): boolean {
+  for (const value of [event.threatType, metadata.threatType]) {
+    if (
+      typeof value === "string" &&
+      value.trim() &&
+      value.trim().toUpperCase() !== "NONE"
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isAttackEventType(type: string): boolean {
+  return (
+    ATTACK_TYPES.includes(type) ||
+    type.includes("ATTACK") ||
+    type.includes("THREAT")
+  );
+}
+
+function readLatency(event: RawEvent, metadata: RawEvent): number | null {
+  const candidates = [
+    event.latencyMs,
+    metadata.latencyMs,
+    metadata.latency,
+    metadata.simulatorTime,
+  ];
+
+  for (const candidate of candidates) {
+    if (
+      typeof candidate === "number" &&
+      Number.isFinite(candidate) &&
+      candidate >= 0
+    ) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function computeMetrics(events: RawEvent[]): LandingMetrics {
+  const metrics: LandingMetrics = {
+    signaturesVerified: 0,
+    threatsDetected: 0,
+    attackTests: 0,
+    attacksDetected: 0,
+    verified: 0,
+    rejected: 0,
+    latencySamples: 0,
+    latencySum: 0,
+  };
+
+  for (const event of events) {
+    const type = normalizeType(event);
+    const metadata = getMetadata(event);
+
+    if (type === "SIGNATURE_VERIFIED") {
+      metrics.signaturesVerified += 1;
+      metrics.verified += 1;
+    } else if (type === "SIGNATURE_REJECTED") {
+      metrics.rejected += 1;
+    }
+
+    const detectedFlag = readDetectedFlag(event, metadata);
+
+    const attackRelated =
+      isAttackEventType(type) ||
+      hasThreatLabel(event, metadata) ||
+      typeof metadata.attackType === "string";
+
+    // A threat is an attack/threat record that was not explicitly
+    // marked as undetected.
+    if (attackRelated && detectedFlag !== false) {
+      metrics.threatsDetected += 1;
+    }
+
+    // An attack test needs an explicit detected true/false result,
+    // otherwise no detection rate can be computed honestly.
+    if (attackRelated && detectedFlag !== null) {
+      metrics.attackTests += 1;
+
+      if (detectedFlag) {
+        metrics.attacksDetected += 1;
+      }
+    }
+
+    const latency = readLatency(event, metadata);
+
+    if (latency !== null) {
+      metrics.latencySamples += 1;
+      metrics.latencySum += latency;
+    }
+  }
+
+  return metrics;
+}
+
+/* ============================== */
 /* HOME                           */
 /* ============================== */
 
 export default function Home() {
+  const [telemetry, setTelemetry] = useState<TelemetryState>({
+    status: "loading",
+  });
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const load = async () => {
+      try {
+        const response = await fetch("/api/events?limit=1000", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error("Events request failed.");
+        }
+
+        const payload: unknown = await response.json();
+        const events = extractEvents(payload);
+
+        if (events === null) {
+          throw new Error("Unrecognised events payload.");
+        }
+
+        setTelemetry({
+          status: "ready",
+          metrics: computeMetrics(events),
+        });
+      } catch {
+        if (!controller.signal.aborted) {
+          setTelemetry({ status: "error" });
+        }
+      }
+    };
+
+    load();
+
+    return () => controller.abort();
+  }, []);
+
+  const show = (
+    pick: (metrics: LandingMetrics) => string,
+  ): string => {
+    if (telemetry.status === "loading") return "...";
+    if (telemetry.status === "error") return "—";
+
+    return pick(telemetry.metrics);
+  };
+
+  const hasAttackTests =
+    telemetry.status === "ready" &&
+    telemetry.metrics.attackTests > 0;
+
+  const thirdLabel = hasAttackTests
+    ? "DETECTION RATE"
+    : "VERIFICATION RATE";
+
+  const thirdValue = show((m) => {
+    if (m.attackTests > 0) {
+      return `${((m.attacksDetected / m.attackTests) * 100).toFixed(1)}%`;
+    }
+
+    const total = m.verified + m.rejected;
+
+    return total > 0
+      ? `${((m.verified / total) * 100).toFixed(1)}%`
+      : "—";
+  });
+
+  const signaturesValue = show((m) =>
+    m.signaturesVerified.toLocaleString("en-US"),
+  );
+
+  const threatsValue = show((m) =>
+    m.threatsDetected.toLocaleString("en-US"),
+  );
+
+  const latencyValue = show((m) =>
+    m.latencySamples > 0
+      ? `${(m.latencySum / m.latencySamples).toFixed(2)} ms`
+      : "—",
+  );
+
   return (
     <main className="q-page">
 
@@ -580,7 +878,7 @@ export default function Home() {
             </Link>
 
             <Link
-              href="/dashboard"
+              href="/demo"
               className="secondary-button"
             >
               <span>
@@ -785,7 +1083,7 @@ export default function Home() {
           <div>
 
             <strong>
-              12.4K
+              {signaturesValue}
             </strong>
 
             <span>
@@ -803,7 +1101,7 @@ export default function Home() {
           <div>
 
             <strong>
-              158
+              {threatsValue}
             </strong>
 
             <span>
@@ -821,11 +1119,11 @@ export default function Home() {
           <div>
 
             <strong>
-              98.7%
+              {thirdValue}
             </strong>
 
             <span>
-              DETECTION RATE
+              {thirdLabel}
             </span>
 
           </div>
@@ -839,11 +1137,11 @@ export default function Home() {
           <div>
 
             <strong>
-              0.008%
+              {latencyValue}
             </strong>
 
             <span>
-              FALSE ACCEPTANCE
+              AVERAGE VERIFICATION
             </span>
 
           </div>

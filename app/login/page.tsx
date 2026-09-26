@@ -2,9 +2,50 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
+  const router = useRouter();
+
   const [showPassword, setShowPassword] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+
+    if (!email.trim() || !password) {
+      setError("Enter your email and password.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Unable to sign in.");
+        setLoading(false);
+        return;
+      }
+
+      router.push("/dashboard");
+      router.refresh();
+    } catch {
+      setError("Something went wrong. Please try again.");
+      setLoading(false);
+    }
+  }
 
   return (
     <main className="auth-page">
@@ -51,10 +92,7 @@ export default function LoginPage() {
           </p>
         </div>
 
-        <form
-          className="auth-form"
-          onSubmit={(e) => e.preventDefault()}
-        >
+        <form className="auth-form" onSubmit={handleSubmit}>
           <label>
             <span>EMAIL ADDRESS</span>
 
@@ -64,6 +102,10 @@ export default function LoginPage() {
               <input
                 type="email"
                 placeholder="operator@qshield.io"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                required
               />
             </div>
           </label>
@@ -77,6 +119,10 @@ export default function LoginPage() {
               <input
                 type={showPassword ? "text" : "password"}
                 placeholder="Enter your password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
               />
 
               <button
@@ -100,8 +146,14 @@ export default function LoginPage() {
             </Link>
           </div>
 
-          <button className="auth-submit" type="submit">
-            <span>AUTHENTICATE</span>
+          {error && (
+            <p style={{ color: "#ff6b6b", fontSize: "0.85rem", margin: "0.25rem 0 0" }}>
+              {error}
+            </p>
+          )}
+
+          <button className="auth-submit" type="submit" disabled={loading}>
+            <span>{loading ? "AUTHENTICATING…" : "AUTHENTICATE"}</span>
             <strong>→</strong>
           </button>
         </form>

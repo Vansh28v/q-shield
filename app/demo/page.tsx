@@ -850,21 +850,51 @@ export default function DemoPage() {
                 </span>
               </h1>
 
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-white/45">
-                Execute a real Q-SHIELD security experiment,
-                inspect the quantum verification path, then
-                subject the verified transcript to modeled
-                cyber attacks.
-              </p>
+              
+              <div className="mt-4 rounded-xl border border-cyan-300/10 bg-cyan-300/[0.025] px-4 py-3">
+  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <div>
+      <div className="text-[9px] font-medium uppercase tracking-[0.22em] text-cyan-300/60">
+        Telemetry & Evaluation
+      </div>
+
+      <p className="mt-1 max-w-3xl text-[10px] leading-5 text-white/35">
+        This demo uses the Q-SHIELD security engine. Verification and
+        modeled attack results generate persistent telemetry used by
+        the audit stream and aggregate evaluation views.
+      </p>
+    </div>
+
+    <div className="flex shrink-0 items-center gap-2">
+      <Link
+        href="/events"
+        className="rounded-lg border border-white/8 bg-white/[0.025] px-3 py-2 text-[9px] uppercase tracking-[0.16em] text-white/45 transition hover:border-cyan-300/20 hover:text-cyan-200"
+      >
+        View Events →
+      </Link>
+
+      <Link
+        href="/analytics"
+        className="rounded-lg border border-white/8 bg-white/[0.025] px-3 py-2 text-[9px] uppercase tracking-[0.16em] text-white/45 transition hover:border-violet-300/20 hover:text-violet-200"
+      >
+        View Analytics →
+      </Link>
+    </div>
+  </div>
+</div>
             </div>
 
             <div className="flex items-center gap-2">
-              <button
-                onClick={clearDemo}
-                className="rounded-lg border border-white/10 px-4 py-2 text-xs text-white/45 transition hover:border-white/20 hover:text-white"
-              >
-                Reset
-              </button>
+             <div className="text-[9px] uppercase tracking-[0.16em] text-white/20">
+  Reset only clears this demo view
+</div>
+
+<button
+  onClick={clearDemo}
+  className="rounded-lg border border-white/10 px-4 py-2 text-xs text-white/45 transition hover:border-white/20 hover:text-white"
+>
+  Reset
+</button>
 
               <button
                 onClick={runExperiment}
@@ -1195,10 +1225,16 @@ export default function DemoPage() {
             </div>
 
             {Object.keys(telemetry).length > 0 && (
-              <div className="mt-5 text-[9px] text-white/20">
-                Telemetry record generated from this experiment.
-              </div>
-            )}
+  <div className="mt-5 text-[9px] text-white/20">
+    Persistent telemetry generated from this experiment.{" "}
+    <Link
+      href="/events"
+      className="text-cyan-300/45 transition hover:text-cyan-200"
+    >
+      View the audit trail →
+    </Link>
+  </div>
+)}
           </aside>
         </section>
 

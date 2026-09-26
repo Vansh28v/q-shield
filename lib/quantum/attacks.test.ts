@@ -10,6 +10,17 @@ const baseConfig = {
   shots: 1000,
   threshold: 0.02,
   seed: 12345,
+
+  // Explicit identities for impersonation testing.
+  signerId: "ATTACKER",
+  expectedSignerId: "LEGITIMATE",
+
+  // Explicit transaction identifiers for replay testing.
+  // Use a unique set for this test file so persistent SQLite
+  // state from an earlier run cannot collide.
+  signatureId: `ATTACKS-TEST-SIGNATURE-${Date.now()}`,
+  sessionId: `ATTACKS-TEST-SESSION-${Date.now()}`,
+  nonce: `ATTACKS-TEST-NONCE-${Date.now()}`,
 };
 
 describe("Quantum attack simulation", () => {
@@ -45,12 +56,28 @@ describe("Quantum attack simulation", () => {
       "IMPERSONATION",
     );
 
+    // Impersonation is an identity/authentication
+    // problem, not a quantum-channel noise attack.
     expect(
-      result.experiment.noise.appliedOperator,
-    ).toBe("Z");
+      result.experiment.noise.model,
+    ).toBe("NONE");
 
     expect(result.detected).toBe(true);
-    expect(result.riskScore).toBe(0.9);
+    expect(result.riskScore).toBe(1);
+
+    expect(result.mechanism).toBe(
+      "IDENTITY_VERIFICATION",
+    );
+
+    expect(result.decision).toBe("REJECT");
+
+    expect(result.evidence).toContain(
+      "ATTACKER",
+    );
+
+    expect(result.evidence).toContain(
+      "LEGITIMATE",
+    );
   });
 
   it("simulates channel manipulation", () => {
@@ -74,7 +101,12 @@ describe("Quantum attack simulation", () => {
   });
 
   it("detects replay using the replay ledger", () => {
-    const result = simulateAttack(
+    /*
+     * The first submission is a legitimate transaction.
+     * The second submission of the exact same identifiers
+     * is the actual replay.
+     */
+    const first = simulateAttack(
       baseConfig,
       {
         type: "REPLAY",
@@ -82,17 +114,36 @@ describe("Quantum attack simulation", () => {
       },
     );
 
-    expect(result.attackType).toBe("REPLAY");
+    expect(first.attackType).toBe("REPLAY");
 
     expect(
-      result.experiment.noise.model,
+      first.experiment.noise.model,
     ).toBe("NONE");
 
-    expect(result.detected).toBe(true);
-    expect(result.riskScore).toBe(1);
+    expect(first.detected).toBe(false);
+    expect(first.riskScore).toBe(0);
+    expect(first.decision).toBe("ACCEPT");
+
+    const second = simulateAttack(
+      baseConfig,
+      {
+        type: "REPLAY",
+        intensity: 1,
+      },
+    );
+
+    expect(second.attackType).toBe("REPLAY");
 
     expect(
-      result.message,
+      second.experiment.noise.model,
+    ).toBe("NONE");
+
+    expect(second.detected).toBe(true);
+    expect(second.riskScore).toBe(1);
+    expect(second.decision).toBe("REJECT");
+
+    expect(
+      second.message,
     ).toContain(
       "session and nonce freshness",
     );

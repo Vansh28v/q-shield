@@ -6,10 +6,38 @@ import Link from "next/link";
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deliveryNote, setDeliveryNote] = useState<string | null>(null);
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!email.trim()) return;
-    setSubmitted(true);
+
+    setError(null);
+    setLoading(true);
+
+    try {
+      const response = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Something went wrong. Please try again.");
+        setLoading(false);
+        return;
+      }
+
+      setDeliveryNote(data.message ?? null);
+      setSubmitted(true);
+    } catch {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -63,8 +91,14 @@ export default function ForgotPasswordPage() {
                 />
               </label>
 
-              <button type="submit" className="auth-submit">
-                INITIATE RECOVERY
+              {error && (
+                <p style={{ color: "#ff6b6b", fontSize: "0.85rem", margin: "0.25rem 0 0" }}>
+                  {error}
+                </p>
+              )}
+
+              <button type="submit" className="auth-submit" disabled={loading}>
+                {loading ? "SENDING…" : "INITIATE RECOVERY"}
                 <span>→</span>
               </button>
             </form>
@@ -90,6 +124,12 @@ export default function ForgotPasswordPage() {
               <strong> {email}</strong>, recovery instructions
               will be sent to that address.
             </p>
+
+            {deliveryNote && (
+              <p style={{ opacity: 0.7, fontSize: "0.8rem", marginTop: "0.5rem" }}>
+                {deliveryNote}
+              </p>
+            )}
 
             <Link href="/login" className="auth-submit recovery-button">
               RETURN TO LOGIN

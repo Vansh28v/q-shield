@@ -5,6 +5,7 @@ import {
 
 import {
   ReplayLedger,
+  LedgerCheckResult,
 } from "../security/ledger";
 
 export type AttackType =
@@ -13,10 +14,10 @@ export type AttackType =
   | "REPLAY"
   | "CHANNEL_MANIPULATION";
 
-export interface AttackConfig {
+export type AttackConfig = {
   type: AttackType;
   intensity: number;
-}
+};
 
 export type DetectionMechanism =
   | "STATISTICAL_VERIFICATION"
@@ -24,22 +25,26 @@ export type DetectionMechanism =
   | "REPLAY_LEDGER"
   | "CHANNEL_INTEGRITY";
 
-export interface AttackResult {
+export type AttackResult = {
   attackType: AttackType;
   intensity: number;
-
-  experiment: ReturnType<
-    typeof runQDSExperiment
-  >;
-
+  experiment: ReturnType<typeof runQDSExperiment>;
   detected: boolean;
   riskScore: number;
   message: string;
-
   mechanism: DetectionMechanism;
   evidence: string;
   decision: "ACCEPT" | "REJECT";
-}
+};
+
+/*
+ * Persistent replay ledger.
+ *
+ * This is intentionally created once at module scope so that
+ * separate simulateAttack() calls can observe transactions
+ * consumed by earlier calls.
+ */
+const replayLedger = new ReplayLedger();
 
 function validateIntensity(
   intensity: number,
@@ -75,12 +80,20 @@ function getNoiseForAttack(
       };
 
     case "IMPERSONATION":
+      /*
+       * Impersonation is an identity/authentication problem,
+       * not a quantum-channel noise problem.
+       */
       return {
-        model: "PHASE_FLIP",
-        probability: intensity,
+        model: "NONE",
+        probability: 0,
       };
 
     case "REPLAY":
+      /*
+       * Replay is a freshness/session problem.
+       * It must not inject quantum noise.
+       */
       return {
         model: "NONE",
         probability: 0,
@@ -99,15 +112,108 @@ function getNoiseForAttack(
   }
 }
 
+function formatLedgerTimestamp(
+  value: number,
+): string {
+  try {
+    return new Date(value).toISOString();
+  } catch {
+    return String(value);
+  }
+}
+
+function describeReplayEvidence(
+  check: LedgerCheckResult,
+): string {
+  const record = check.record;
+
+  switch (check.reason) {
+    case "EXACT_TRANSACTION_ALREADY_SEEN":
+      if (record) {
+        return (
+          `The exact transaction tuple ` +
+          `(signature "${record.signatureId}", ` +
+          `session "${record.sessionId}", ` +
+          `nonce "${record.nonce}") was already consumed ` +
+          `by the replay ledger at ` +
+          `${formatLedgerTimestamp(record.createdAt)}. ` +
+          `Resubmitting the same transaction was rejected as a replay.`
+        );
+      }
+
+      return (
+        "The exact signature/session/nonce transaction was already " +
+        "consumed by the replay ledger."
+      );
+
+    case "SIGNATURE_ALREADY_SEEN":
+      if (record) {
+        return (
+          `Signature "${record.signatureId}" was already recorded by ` +
+          `the replay ledger at ${formatLedgerTimestamp(record.createdAt)} ` +
+          `(session "${record.sessionId}", nonce "${record.nonce}"). ` +
+          `Resubmitting the same signature was rejected as a replay.`
+        );
+      }
+
+      return (
+        "This signature was already recorded by the replay ledger. " +
+        "Resubmitting it was rejected as a replay."
+      );
+
+    case "SESSION_NONCE_ALREADY_SEEN":
+      if (record) {
+        return (
+          `The session "${record.sessionId}" and nonce "${record.nonce}" ` +
+          `combination was already consumed by the replay ledger at ` +
+          `${formatLedgerTimestamp(record.createdAt)}. ` +
+          "Resubmitting the same session/nonce pair was rejected as a replay."
+        );
+      }
+
+      return (
+        "This session and nonce combination was already consumed by " +
+        "the replay ledger. Resubmitting it was rejected as a replay."
+      );
+
+    case "NONCE_ALREADY_SEEN":
+      if (record) {
+        return (
+          `Nonce "${record.nonce}" was already consumed by the replay ledger ` +
+          `at ${formatLedgerTimestamp(record.createdAt)}. ` +
+          "Reusing the same nonce was rejected as a replay."
+        );
+      }
+
+      return (
+        "This nonce was already consumed by the replay ledger. " +
+        "Reusing it was rejected as a replay."
+      );
+
+    default:
+      return (
+        "The submitted transaction was already consumed by " +
+        "the replay ledger."
+      );
+  }
+}
+
 /**
- * Simulates a Q-SHIELD attack.
+ * Simulate a Q-SHIELD security attack.
  *
- * API intentionally remains:
+ * Attack mechanisms:
  *
- * simulateAttack(baseConfig, attack)
+ * FORGERY
+ *   -> statistical verification
  *
- * because this is the existing public contract
- * used by the test suite and frontend.
+ * IMPERSONATION
+ *   -> signer identity comparison
+ *
+ * REPLAY
+ *   -> exact persistent transaction ledger
+ *
+ * CHANNEL_MANIPULATION
+ *   -> statistical verification + CHSH channel integrity
  */
 export function simulateAttack(
   baseConfig: QDSExperimentConfig,
@@ -117,30 +223,24 @@ export function simulateAttack(
     attack.intensity,
   );
 
-  const experimentConfig:
-    QDSExperimentConfig = {
-    ...baseConfig,
-
-    noise:
-      getNoiseForAttack(
-        attack.type,
-        attack.intensity,
-      ),
-  };
-
-  const experiment =
-    runQDSExperiment(
-      experimentConfig,
+  const noise =
+    getNoiseForAttack(
+      attack.type,
+      attack.intensity,
     );
 
+  const experiment =
+    runQDSExperiment({
+      ...baseConfig,
+      noise,
+    });
+
   /*
-   * ==================================================
+   * ============================================================
    * FORGERY
-   * ==================================================
-   *
-   * Forgery is evaluated through the statistical
-   * verification layer.
+   * ============================================================
    */
+
   if (
     attack.type ===
     "FORGERY"
@@ -149,23 +249,15 @@ export function simulateAttack(
       attack.intensity > 0 &&
       !experiment.verification.accepted;
 
-    /*
-     * Preserve the expected test behavior:
-     *
-     * intensity = 1 → risk = 1
-     * intensity = 0 → risk = 0
-     */
     const riskScore =
       detected
         ? Math.min(
             1,
             Math.max(
               attack.intensity,
-              experiment.verification
-                .deviation /
+              experiment.verification.deviation /
                 Math.max(
-                  experiment.verification
-                    .threshold,
+                  experiment.verification.threshold,
                   Number.EPSILON,
                 ),
             ),
@@ -196,14 +288,12 @@ export function simulateAttack(
       evidence:
         detected
           ? `Observed deviation ${(
-              experiment.verification
-                .deviation * 100
+              experiment.verification.deviation * 100
             ).toFixed(
               2,
             )}% exceeded the configured verification threshold.`
           : `Observed deviation ${(
-              experiment.verification
-                .deviation * 100
+              experiment.verification.deviation * 100
             ).toFixed(
               2,
             )}% remained within the configured verification threshold.`,
@@ -216,27 +306,43 @@ export function simulateAttack(
   }
 
   /*
-   * ==================================================
+   * ============================================================
    * IMPERSONATION
-   * ==================================================
-   *
-   * Identity verification is the detection mechanism.
-   *
-   * Existing contract:
-   *
-   * intensity × 0.9
-   *
-   * Therefore intensity 1 → 0.9.
+   * ============================================================
    */
+
   if (
     attack.type ===
     "IMPERSONATION"
   ) {
+    const {
+      signerId,
+      expectedSignerId,
+    } = baseConfig;
+
+    if (
+      !signerId ||
+      !signerId.trim() ||
+      !expectedSignerId ||
+      !expectedSignerId.trim()
+    ) {
+      throw new Error(
+        "Impersonation detection requires signerId and expectedSignerId.",
+      );
+    }
+
     const detected =
-      attack.intensity > 0;
+      signerId !== expectedSignerId;
 
     const riskScore =
-      attack.intensity * 0.9;
+      detected
+        ? 1
+        : 0;
+
+    const evidence =
+      detected
+        ? `Claimed signer identity "${signerId}" does not match expected signer identity "${expectedSignerId}".`
+        : `Claimed signer identity "${signerId}" matches the expected signer identity.`;
 
     return {
       attackType:
@@ -259,10 +365,7 @@ export function simulateAttack(
       mechanism:
         "IDENTITY_VERIFICATION",
 
-      evidence:
-        detected
-          ? "The supplied signer identity does not match the expected identity."
-          : "Signer identity remains consistent.",
+      evidence,
 
       decision:
         detected
@@ -272,77 +375,128 @@ export function simulateAttack(
   }
 
   /*
-   * ==================================================
+   * ============================================================
    * REPLAY
-   * ==================================================
+   * ============================================================
    *
-   * Replay is deliberately detected by the replay
-   * ledger, not by quantum statistics.
+   * IMPORTANT:
+   *
+   * Replay detection uses the EXACT transaction tuple:
+   *
+   *   signatureId + sessionId + nonce
+   *
+   * Therefore:
+   *
+   *   same signature + different nonce
+   *       -> fresh
+   *
+   *   same nonce + different session
+   *       -> fresh
+   *
+   *   same session + nonce + different signature
+   *       -> fresh
+   *
+   *   exact same tuple
+   *       -> replay
    */
+
   if (
     attack.type ===
     "REPLAY"
   ) {
-    const ledger =
-      new ReplayLedger({
-        memoryOnly: true,
-      });
+    const {
+      signatureId,
+      sessionId,
+      nonce,
+      signerId,
+    } = baseConfig;
+
+    if (
+      !signatureId ||
+      !signatureId.trim()
+    ) {
+      throw new Error(
+        "Replay detection requires a non-empty signatureId.",
+      );
+    }
+
+    if (
+      !sessionId ||
+      !sessionId.trim()
+    ) {
+      throw new Error(
+        "Replay detection requires a non-empty sessionId.",
+      );
+    }
+
+    if (
+      !nonce ||
+      !nonce.trim()
+    ) {
+      throw new Error(
+        "Replay detection requires a non-empty nonce.",
+      );
+    }
+
+    if (
+      !signerId ||
+      !signerId.trim()
+    ) {
+      throw new Error(
+        "Replay detection requires a non-empty signerId.",
+      );
+    }
 
     /*
-     * The attack simulator does not receive a full
-     * signature/session object, so use deterministic
-     * identifiers derived from the supplied config.
+     * Use the exact replay ledger rather than the broader
+     * freshness ledger.
      */
-    const signatureId =
-      "ATTACK-REPLAY-SIGNATURE";
-
-    const sessionId =
-      "ATTACK-REPLAY-SESSION";
-
-    const nonce =
-      "ATTACK-REPLAY-NONCE";
-
-    const signerId =
-      "ATTACK-REPLAY-SIGNER";
-
-    /*
-     * First transmission.
-     */
-    const first =
-      ledger.check(
+    const check =
+      replayLedger.checkExact(
         signatureId,
         sessionId,
         nonce,
       );
 
-    if (first.fresh) {
-      ledger.record(
+    if (
+      check.fresh
+    ) {
+      replayLedger.recordExact(
         signatureId,
         sessionId,
         nonce,
         signerId,
         Date.now(),
       );
+
+      return {
+        attackType:
+          attack.type,
+
+        intensity:
+          attack.intensity,
+
+        experiment,
+
+        detected:
+          false,
+
+        riskScore:
+          0,
+
+        message:
+          "No replay detected: exact signature/session/nonce transaction was fresh.",
+
+        mechanism:
+          "REPLAY_LEDGER",
+
+        evidence:
+          `The exact transaction tuple (signature "${signatureId}", session "${sessionId}", nonce "${nonce}") was not previously recorded. It has now been consumed by the replay ledger.`,
+
+        decision:
+          "ACCEPT",
+      };
     }
-
-    /*
-     * Replayed transmission.
-     */
-    const replay =
-      ledger.check(
-        signatureId,
-        sessionId,
-        nonce,
-      );
-
-    const detected =
-      attack.intensity > 0 &&
-      !replay.fresh;
-
-    const riskScore =
-      detected
-        ? 1
-        : attack.intensity;
 
     return {
       attackType:
@@ -353,39 +507,33 @@ export function simulateAttack(
 
       experiment,
 
-      detected,
+      detected:
+        true,
 
-      riskScore,
+      riskScore:
+        1,
 
       message:
-        detected
-          ? "REPLAY attack detected: the session and nonce freshness check failed."
-          : "No replay detected: session and nonce freshness remain valid.",
-
+  "REPLAY attack detected: session and nonce freshness validation failed because the exact signature/session/nonce transaction was already consumed.",
       mechanism:
         "REPLAY_LEDGER",
 
       evidence:
-        detected
-          ? "The same session and nonce were already consumed by the replay ledger."
-          : "The session and nonce combination has not previously been consumed.",
+        describeReplayEvidence(
+          check,
+        ),
 
       decision:
-        detected
-          ? "REJECT"
-          : "ACCEPT",
+        "REJECT",
     };
   }
 
   /*
-   * ==================================================
+   * ============================================================
    * CHANNEL MANIPULATION
-   * ==================================================
-   *
-   * Channel manipulation is evaluated using the
-   * statistical verification result and, when present,
-   * the CHSH Bell-correlation result.
+   * ============================================================
    */
+
   if (
     attack.type ===
     "CHANNEL_MANIPULATION"
@@ -408,12 +556,6 @@ export function simulateAttack(
         chshFailure
       );
 
-    /*
-     * Calculate normalized CHSH risk.
-     *
-     * Classical bound = 2
-     * Ideal quantum value = 2√2
-     */
     let chshRisk = 0;
 
     if (
@@ -424,7 +566,9 @@ export function simulateAttack(
         2 *
         Math.sqrt(2);
 
-      if (chshScore <= 2) {
+      if (
+        chshScore <= 2
+      ) {
         chshRisk = 1;
       } else {
         chshRisk =
@@ -436,9 +580,10 @@ export function simulateAttack(
                 ideal -
                 chshScore
               ) /
-                (
-                  ideal - 2
-                ),
+              (
+                ideal -
+                2
+              ),
             ),
           );
       }
@@ -483,7 +628,7 @@ export function simulateAttack(
       statisticalFailure
     ) {
       evidence =
-        `Statistical verification rejected the manipulated channel result.`;
+        "Statistical verification rejected the manipulated channel result.";
     }
 
     return {

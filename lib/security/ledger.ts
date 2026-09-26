@@ -5,7 +5,8 @@ export type ReplayCheckReason =
   | "NEW"
   | "SIGNATURE_ALREADY_SEEN"
   | "NONCE_ALREADY_SEEN"
-  | "SESSION_NONCE_ALREADY_SEEN";
+  | "SESSION_NONCE_ALREADY_SEEN"
+  | "EXACT_TRANSACTION_ALREADY_SEEN";
 
 export interface ReplayRecord {
   signatureId: string;
@@ -33,9 +34,26 @@ export class ReplayLedger {
   private readonly memoryOnly: boolean;
   private db: DatabaseSync | null;
 
+  /*
+   * Existing/general ledger state.
+   *
+   * These are intentionally preserved because other parts of Q-SHIELD
+   * may use ReplayLedger as a broader freshness ledger.
+   */
   private readonly records = new Map<string, ReplayRecord>();
   private readonly sessionNonces = new Set<string>();
   private readonly nonces = new Set<string>();
+
+  /*
+   * Exact transaction ledger.
+   *
+   * Exact replay identity is:
+   *
+   *   signatureId + sessionId + nonce
+   *
+   * This is intentionally separate from the broader freshness rules above.
+   */
+  private readonly exactRecords = new Map<string, ReplayRecord>();
 
   constructor(options: ReplayLedgerOptions = {}) {
     this.memoryOnly = options.memoryOnly === true;
@@ -44,9 +62,20 @@ export class ReplayLedger {
       this.db = null;
     } else {
       this.db = options.db ?? getDatabase();
+      this.initializeExactReplayTable();
     }
   }
 
+  /**
+   * Existing/general replay check.
+   *
+   * This preserves the original behavior:
+   * - same signature
+   * - same session + nonce
+   * - same nonce
+   *
+   * can be considered already seen.
+   */
   check(
     signatureId: string,
     sessionId: string,
@@ -208,6 +237,117 @@ export class ReplayLedger {
     };
   }
 
+  /**
+   * Exact replay check.
+   *
+   * A transaction is considered the same transaction ONLY when
+   * all three identifiers match:
+   *
+   *   signatureId + sessionId + nonce
+   *
+   * Therefore:
+   *
+   * same signature + different nonce  -> NEW
+   * same nonce + different session    -> NEW
+   * same session + nonce + different signature -> NEW
+   * exact same tuple                  -> REPLAY
+   */
+  checkExact(
+    signatureId: string,
+    sessionId: string,
+    nonce: string,
+  ): LedgerCheckResult {
+    this.validateIdentifiers(
+      signatureId,
+      sessionId,
+      nonce,
+    );
+
+    const key = this.getExactKey(
+      signatureId,
+      sessionId,
+      nonce,
+    );
+
+    const memoryRecord = this.exactRecords.get(key);
+
+    if (memoryRecord) {
+      return {
+        fresh: false,
+        reason: "EXACT_TRANSACTION_ALREADY_SEEN",
+        record: memoryRecord,
+      };
+    }
+
+    if (!this.db) {
+      return {
+        fresh: true,
+        reason: "NEW",
+      };
+    }
+
+    try {
+      const row = this.db
+        .prepare(
+          `
+            SELECT
+              signature_id,
+              session_id,
+              nonce,
+              signer_id,
+              created_at
+            FROM qshield_exact_replay_ledger
+            WHERE signature_id = ?
+              AND session_id = ?
+              AND nonce = ?
+            LIMIT 1
+          `,
+        )
+        .get(
+          signatureId,
+          sessionId,
+          nonce,
+        ) as
+        | {
+            signature_id: string;
+            session_id: string;
+            nonce: string;
+            signer_id: string;
+            created_at: number;
+          }
+        | undefined;
+
+      if (!row) {
+        return {
+          fresh: true,
+          reason: "NEW",
+        };
+      }
+
+      const record = this.toReplayRecord(row);
+
+      this.exactRecords.set(
+        key,
+        record,
+      );
+
+      return {
+        fresh: false,
+        reason: "EXACT_TRANSACTION_ALREADY_SEEN",
+        record,
+      };
+    } catch {
+      /*
+       * If SQLite cannot be queried, use the local exact ledger.
+       * This does not manufacture a replay result.
+       */
+      return {
+        fresh: true,
+        reason: "NEW",
+      };
+    }
+  }
+
   record(
     signatureId: string,
     sessionId: string,
@@ -222,11 +362,15 @@ export class ReplayLedger {
     );
 
     if (!signerId || !signerId.trim()) {
-      throw new Error("Signer ID cannot be empty");
+      throw new Error(
+        "Signer ID cannot be empty",
+      );
     }
 
     if (!Number.isFinite(createdAt)) {
-      throw new Error("createdAt must be finite");
+      throw new Error(
+        "createdAt must be finite",
+      );
     }
 
     const checkResult = this.check(
@@ -292,6 +436,124 @@ export class ReplayLedger {
     }
 
     this.cacheRecord(record);
+
+    return record;
+  }
+
+  /**
+   * Record an exact transaction.
+   *
+   * This does NOT use the broader check()/record() rules.
+   */
+  recordExact(
+    signatureId: string,
+    sessionId: string,
+    nonce: string,
+    signerId: string,
+    createdAt: number = Date.now(),
+  ): ReplayRecord {
+    this.validateIdentifiers(
+      signatureId,
+      sessionId,
+      nonce,
+    );
+
+    if (!signerId || !signerId.trim()) {
+      throw new Error(
+        "Signer ID cannot be empty",
+      );
+    }
+
+    if (!Number.isFinite(createdAt)) {
+      throw new Error(
+        "createdAt must be finite",
+      );
+    }
+
+    const existing = this.checkExact(
+      signatureId,
+      sessionId,
+      nonce,
+    );
+
+    if (!existing.fresh) {
+      throw new Error(
+        "EXACT_TRANSACTION_ALREADY_SEEN",
+      );
+    }
+
+    const record: ReplayRecord = {
+      signatureId,
+      sessionId,
+      nonce,
+      signerId,
+      createdAt,
+      consumed: true,
+    };
+
+    const key = this.getExactKey(
+      signatureId,
+      sessionId,
+      nonce,
+    );
+
+    if (this.db) {
+      try {
+        this.db
+          .prepare(
+            `
+              INSERT INTO qshield_exact_replay_ledger (
+                signature_id,
+                session_id,
+                nonce,
+                signer_id,
+                created_at
+              )
+              VALUES (?, ?, ?, ?, ?)
+            `,
+          )
+          .run(
+            signatureId,
+            sessionId,
+            nonce,
+            signerId,
+            createdAt,
+          );
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error);
+
+        if (
+          message.includes("UNIQUE") ||
+          message.includes("constraint")
+        ) {
+          const persisted = this.checkExact(
+            signatureId,
+            sessionId,
+            nonce,
+          );
+
+          if (!persisted.fresh) {
+            throw new Error(
+              "EXACT_TRANSACTION_ALREADY_SEEN",
+            );
+          }
+        }
+
+        /*
+         * Do not silently switch to a different replay identity.
+         * Cache the transaction locally so the current process
+         * still has a deterministic exact ledger.
+         */
+      }
+    }
+
+    this.exactRecords.set(
+      key,
+      record,
+    );
 
     return record;
   }
@@ -408,6 +670,7 @@ export class ReplayLedger {
     this.records.clear();
     this.sessionNonces.clear();
     this.nonces.clear();
+    this.exactRecords.clear();
 
     if (!this.db || this.memoryOnly) {
       return;
@@ -419,9 +682,58 @@ export class ReplayLedger {
           "DELETE FROM replay_ledger",
         )
         .run();
+
+      this.db
+        .prepare(
+          "DELETE FROM qshield_exact_replay_ledger",
+        )
+        .run();
     } catch {
       // In-memory state is already cleared.
     }
+  }
+
+  private initializeExactReplayTable(): void {
+    if (!this.db) {
+      return;
+    }
+
+    try {
+      this.db.exec(
+        `
+          CREATE TABLE IF NOT EXISTS qshield_exact_replay_ledger (
+            signature_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            nonce TEXT NOT NULL,
+            signer_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (
+              signature_id,
+              session_id,
+              nonce
+            )
+          )
+        `,
+      );
+    } catch {
+      /*
+       * The existing replay ledger remains usable.
+       * If this table cannot be initialized, the exact ledger
+       * will still use its in-memory state for the current process.
+       */
+    }
+  }
+
+  private getExactKey(
+    signatureId: string,
+    sessionId: string,
+    nonce: string,
+  ): string {
+    return JSON.stringify([
+      signatureId,
+      sessionId,
+      nonce,
+    ]);
   }
 
   private validateIdentifiers(
@@ -460,7 +772,9 @@ export class ReplayLedger {
       `${record.sessionId}:${record.nonce}`,
     );
 
-    this.nonces.add(record.nonce);
+    this.nonces.add(
+      record.nonce,
+    );
   }
 
   private toReplayRecord(row: {

@@ -71,6 +71,21 @@ function validateRequest(
     }
   }
 
+  // FIX #2 (IMPERSONATION) — expectedSignerId is optional at the
+  // API layer (existing non-impersonation scenarios must keep
+  // working without it), but when supplied it must be a
+  // non-empty string. simulateAttack() enforces its own stricter
+  // requirement (both signerId and expectedSignerId present) for
+  // the IMPERSONATION attack type specifically.
+  if (experiment.expectedSignerId !== undefined) {
+    if (
+      typeof experiment.expectedSignerId !== "string" ||
+      experiment.expectedSignerId.trim().length === 0
+    ) {
+      return false;
+    }
+  }
+
   if (
     !isFiniteNumber(experiment.alpha) ||
     !isFiniteNumber(experiment.beta) ||
@@ -161,15 +176,37 @@ export async function POST(
       );
     }
 
+    // FIX 8 — measure the actual backend execution time of the
+    // attack simulation using a high-resolution timer. This does
+    // NOT change attack detection logic, replay ledger behavior,
+    // or statistical verification — it only wraps the existing
+    // simulateAttack call with timing instrumentation.
+    const startedAt = performance.now();
+
     const result = simulateAttack(
       body.experiment,
       body.attack,
     );
 
+    const measuredLatencyMs = performance.now() - startedAt;
+
+    // Merge the measured latency into the existing result shape.
+    // All existing fields (detected, riskScore, mechanism, evidence,
+    // decision, message, experiment.verification, etc.) are preserved
+    // unchanged; only experiment.latencyMs is set from the real
+    // measurement instead of being hardcoded or omitted.
+    const resultWithLatency = {
+      ...result,
+      experiment: {
+        ...result.experiment,
+        latencyMs: measuredLatencyMs,
+      },
+    };
+
     return NextResponse.json(
       {
         success: true,
-        attack: result,
+        attack: resultWithLatency,
       },
       {
         status: 200,
