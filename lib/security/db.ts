@@ -6,9 +6,11 @@ let dbInstance: DatabaseSync | null = null;
 
 export function getDatabasePath(dbName = "qshield.sqlite"): string {
   const dir = path.join(process.cwd(), ".qshield");
+
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+
   return path.join(dir, dbName);
 }
 
@@ -17,11 +19,22 @@ export function getDatabase(dbPath?: string): DatabaseSync {
     return dbInstance;
   }
 
-  const targetPath = dbPath ?? getDatabasePath();
+  const isBuildPhase =
+    process.env.NEXT_PHASE === "phase-production-build";
+
+  // During `next build`, every worker gets its own in-memory database.
+  // This prevents multiple build workers from locking the real SQLite file.
+  const targetPath = isBuildPhase
+    ? ":memory:"
+    : (dbPath ?? getDatabasePath());
+
   const db = new DatabaseSync(targetPath);
 
-  // Enable WAL mode & foreign keys for performance and data safety
-  db.exec("PRAGMA journal_mode = WAL;");
+  // WAL is only needed for the persistent runtime database.
+  if (!isBuildPhase) {
+    db.exec("PRAGMA journal_mode = WAL;");
+  }
+
   db.exec("PRAGMA foreign_keys = ON;");
 
   // Initialize schema
@@ -77,6 +90,7 @@ export function getDatabase(dbPath?: string): DatabaseSync {
 
 export function resetDatabase(db?: DatabaseSync): void {
   const targetDb = db ?? getDatabase();
+
   targetDb.exec("DELETE FROM replay_ledger;");
   targetDb.exec("DELETE FROM experiment_history;");
   targetDb.exec("DELETE FROM security_events;");
