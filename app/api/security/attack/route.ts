@@ -10,6 +10,10 @@ import {
   QDSExperimentConfig,
 } from "../../../../lib/quantum/simulator";
 
+import {
+  saveAttackRun,
+} from "../../../../lib/security/persistence";
+
 const attackTypes: AttackType[] = [
   "FORGERY",
   "IMPERSONATION",
@@ -202,6 +206,8 @@ export async function POST(
         latencyMs: measuredLatencyMs,
       },
     };
+
+    saveAttackRun(resultWithLatency);
 
     return NextResponse.json(
       {

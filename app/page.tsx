@@ -797,19 +797,19 @@ export default function Home() {
             Home
           </Link>
 
-          <Link href="/quantum">
-            Quantum
+          <Link href="/technology">
+            Technology
           </Link>
 
-          <Link href="/signature">
+          <Link href="/security">
             Security
           </Link>
 
-          <Link href="/intelligence">
+          <Link href="/threat-intelligence">
             Intelligence
           </Link>
 
-          <Link href="/dashboard">
+          <Link href="/about">
             About
           </Link>
 
@@ -901,7 +901,7 @@ export default function Home() {
             {/* QUANTUM */}
 
             <Link
-              href="/quantum"
+              href="/technology"
               className="engine-card"
             >
 
@@ -942,7 +942,7 @@ export default function Home() {
             {/* STATISTICAL */}
 
             <Link
-              href="/signature"
+              href="/security"
               className="engine-card"
             >
 
@@ -988,7 +988,7 @@ export default function Home() {
             {/* AI */}
 
             <Link
-              href="/intelligence"
+              href="/threat-intelligence"
               className="engine-card"
             >
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { simulateAttack } from "../../../../lib/quantum/attacks";
+import { saveAttackRun } from "../../../../lib/security/persistence";
 
 export async function POST(request: Request) {
   try {
@@ -14,6 +15,8 @@ export async function POST(request: Request) {
     }
 
     const result = simulateAttack(experiment, attack);
+    saveAttackRun(result);
+
     return NextResponse.json({ success: true, attack: result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error.";

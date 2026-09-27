@@ -176,6 +176,12 @@ export default function DashboardPage() {
 
   useEffect(() => {
     loadEvents();
+
+    const interval = setInterval(() => {
+      loadEvents(true);
+    }, 5000);
+
+    return () => clearInterval(interval);
   }, []);
 
   const sortedEvents = useMemo(() => {
